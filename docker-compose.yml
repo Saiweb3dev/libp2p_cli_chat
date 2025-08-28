@@ -1,0 +1,38 @@
+version: "3.9"
+
+services:
+  bootstrap:
+    build: .
+    command: go run cmd/bootstrap/main.go
+    ports:
+      - "8080:8080"   # REST API for registry
+      - "9000:9000"   # optional libp2p port if needed
+    networks:
+      - p2pnet
+
+  peer1:
+    build: .
+    command: go run cmd/peer/main.go --port=9001 --bootstrap http://bootstrap:8080
+    depends_on:
+      - bootstrap
+    networks:
+      - p2pnet
+
+  peer2:
+    build: .
+    command: go run cmd/peer/main.go --port=9002 --bootstrap http://bootstrap:8080
+    depends_on:
+      - bootstrap
+    networks:
+      - p2pnet
+
+  peer3:
+    build: .
+    command: go run cmd/peer/main.go --port=9003 --bootstrap http://bootstrap:8080
+    depends_on:
+      - bootstrap
+    networks:
+      - p2pnet
+
+networks:
+  p2pnet:
