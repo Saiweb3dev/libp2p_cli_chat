@@ -5,36 +5,48 @@ import (
     "fmt"
     "os"
     "strings"
+	"strconv"
+	"time"
 
     "github.com/libp2p/go-libp2p/core/peer"
-    "github.com/Saiweb3dev/distributed-compute-network/pkg/p2p"
+    "libp2p_compute/pkg/p2p"
 )
 
 // ChatCLI handles the command-line interface for the chat application
 type ChatCLI struct {
     chatService       *p2p.ChatService
     connectionManager *p2p.ConnectionManager
+	taskService       *p2p.TaskService
     reader           *bufio.Reader
 }
 
 // NewChatCLI creates a new CLI instance
-func NewChatCLI(cs *p2p.ChatService, cm *p2p.ConnectionManager) *ChatCLI {
+func NewChatCLI(cs *p2p.ChatService, cm *p2p.ConnectionManager , ts *p2p.TaskService) *ChatCLI {
     return &ChatCLI{
         chatService:       cs,
         connectionManager: cm,
+		taskService:       ts,
         reader:           bufio.NewReader(os.Stdin),
     }
 }
 
 // Start begins the interactive CLI loop
 func (cli *ChatCLI) Start() {
-    fmt.Println("\n🚀 Chat CLI started!")
-    fmt.Println("Commands:")
-    fmt.Println("  <name|peerID> <message>  - Send message to peer")
-    fmt.Println("  /peers                   - List connected peers")
-    fmt.Println("  /connect <multiaddr>     - Connect to a peer")
-    fmt.Println("  /help                    - Show this help")
-    fmt.Println("  /quit                    - Exit the application")
+    fmt.Println("\n🚀 P2P Chat & Task Processing CLI started!")
+    fmt.Println("Chat Commands:")
+    fmt.Println("  <name|peerID> <message>     - Send message to peer")
+    fmt.Println("\nTask Commands:")
+    fmt.Println("  /task prime <number>        - Check if number is prime")
+    fmt.Println("  /task factorial <number>    - Calculate factorial")
+    fmt.Println("  /task fibonacci <number>    - Calculate fibonacci")
+    fmt.Println("  /task sum <n1,n2,n3...>     - Calculate sum of numbers")
+    fmt.Println("\nSystem Commands:")
+    fmt.Println("  /peers                      - List connected peers")
+    fmt.Println("  /connect <multiaddr>        - Connect to a peer")
+    fmt.Println("  /queue                      - Show task queue status")
+    fmt.Println("  /pending                    - Show pending tasks")
+    fmt.Println("  /help                       - Show this help")
+    fmt.Println("  /quit                       - Exit the application")
     fmt.Println()
     
     for {
@@ -67,9 +79,9 @@ func (cli *ChatCLI) processCommand(line string) error {
     return cli.handleChatMessage(line)
 }
 
-// handleSpecialCommand processes commands like /peers, /connect, etc.
+// handleSpecialCommand processes commands like /peers, /connect, /task, etc.
 func (cli *ChatCLI) handleSpecialCommand(line string) error {
-    parts := strings.SplitN(line, " ", 2)
+    parts := strings.SplitN(line, " ", 3)
     command := parts[0]
     
     switch command {
@@ -92,8 +104,79 @@ func (cli *ChatCLI) handleSpecialCommand(line string) error {
     case "/info":
         cli.connectionManager.PrintHostInfo()
         
+    case "/queue":
+        cli.showQueueStatus()
+        
+    case "/pending":
+        cli.showPendingTasks()
+        
+    case "/task":
+        if len(parts) < 3 {
+            return fmt.Errorf("usage: /task <type> <parameters>")
+        }
+        return cli.handleTaskCommand(parts[1], parts[2])
+        
     default:
         return fmt.Errorf("unknown command: %s (use /help for available commands)", command)
+    }
+    
+    return nil
+}
+
+// handleTaskCommand processes task submission commands
+func (cli *ChatCLI) handleTaskCommand(taskType, params string) error {
+    switch taskType {
+    case "prime":
+        number, err := strconv.ParseInt(params, 10, 64)
+        if err != nil {
+            return fmt.Errorf("invalid number: %s", params)
+        }
+        taskID, err := cli.taskService.SubmitTask(p2p.TaskTypePrime, number, nil, 1)
+        if err != nil {
+            return err
+        }
+        fmt.Printf("📋 Submitted prime check task: %s\n", taskID)
+        
+    case "factorial":
+        number, err := strconv.ParseInt(params, 10, 64)
+        if err != nil {
+            return fmt.Errorf("invalid number: %s", params)
+        }
+        taskID, err := cli.taskService.SubmitTask(p2p.TaskTypeFactorial, number, nil, 1)
+        if err != nil {
+            return err
+        }
+        fmt.Printf("📋 Submitted factorial task: %s\n", taskID)
+        
+    case "fibonacci":
+        number, err := strconv.ParseInt(params, 10, 64)
+        if err != nil {
+            return fmt.Errorf("invalid number: %s", params)
+        }
+        taskID, err := cli.taskService.SubmitTask(p2p.TaskTypeFibonacci, number, nil, 1)
+        if err != nil {
+            return err
+        }
+        fmt.Printf("📋 Submitted fibonacci task: %s\n", taskID)
+        
+    case "sum":
+        numberStrs := strings.Split(params, ",")
+        numbers := make([]int64, len(numberStrs))
+        for i, numStr := range numberStrs {
+            num, err := strconv.ParseInt(strings.TrimSpace(numStr), 10, 64)
+            if err != nil {
+                return fmt.Errorf("invalid number: %s", numStr)
+            }
+            numbers[i] = num
+        }
+        taskID, err := cli.taskService.SubmitTask(p2p.TaskTypeSum, 0, numbers, 1)
+        if err != nil {
+            return err
+        }
+        fmt.Printf("📋 Submitted sum task: %s\n", taskID)
+        
+    default:
+        return fmt.Errorf("unknown task type: %s", taskType)
     }
     
     return nil
@@ -135,12 +218,56 @@ func (cli *ChatCLI) handleChatMessage(line string) error {
 // showHelp displays available commands
 func (cli *ChatCLI) showHelp() {
     fmt.Println("\n📚 Available Commands:")
-    fmt.Println("  <name|peerID> <message>  - Send message to a peer")
-    fmt.Println("  /peers                   - List all connected peers")
-    fmt.Println("  /connect <multiaddr>     - Connect to a new peer")
-    fmt.Println("  /info                    - Show this host's information")
-    fmt.Println("  /help                    - Show this help message")
-    fmt.Println("  /quit                    - Exit the application")
+    fmt.Println("\nChat Commands:")
+    fmt.Println("  <name|peerID> <message>     - Send message to a peer")
+    fmt.Println("\nTask Commands:")
+    fmt.Println("  /task prime <number>        - Check if number is prime")
+    fmt.Println("  /task factorial <number>    - Calculate factorial")
+    fmt.Println("  /task fibonacci <number>    - Calculate fibonacci") 
+    fmt.Println("  /task sum <n1,n2,n3...>     - Calculate sum of numbers")
+    fmt.Println("\nSystem Commands:")
+    fmt.Println("  /peers                      - List all connected peers")
+    fmt.Println("  /connect <multiaddr>        - Connect to a new peer")
+    fmt.Println("  /queue                      - Show task queue status")
+    fmt.Println("  /pending                    - Show pending tasks")
+    fmt.Println("  /info                       - Show this host's information")
+    fmt.Println("  /help                       - Show this help message")
+    fmt.Println("  /quit                       - Exit the application")
+    fmt.Println()
+}
+
+// showQueueStatus displays current task queue status
+func (cli *ChatCLI) showQueueStatus() {
+    count, tasks := cli.taskService.GetQueueStatus()
+    
+    fmt.Printf("\n📋 Task Queue Status: %d tasks\n", count)
+    if count == 0 {
+        fmt.Println("   Queue is empty")
+        return
+    }
+    
+    for i, task := range tasks {
+        fmt.Printf("   %d. [%s] %s (Priority: %d)\n", 
+            i+1, task.Type, task.ID, task.Priority)
+    }
+    fmt.Println()
+}
+
+// showPendingTasks displays pending tasks for coordinators
+func (cli *ChatCLI) showPendingTasks() {
+    pending := cli.taskService.GetPendingTasks()
+    
+    fmt.Printf("\n⏳ Pending Tasks: %d\n", len(pending))
+    if len(pending) == 0 {
+        fmt.Println("   No pending tasks")
+        return
+    }
+    
+    for taskID, task := range pending {
+        elapsed := time.Since(task.StartTime)
+        fmt.Printf("   %s [%s] - %v elapsed\n", 
+            taskID, task.Task.Type, elapsed.Round(time.Millisecond))
+    }
     fmt.Println()
 }
 

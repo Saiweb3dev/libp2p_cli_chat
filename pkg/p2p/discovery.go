@@ -1,82 +1,157 @@
 package p2p
 
 import (
-	"context"
-	"fmt"
-	"time"
+    "bytes"
+    "context"
+    "encoding/json"
+    "fmt"
+    "log"
+    "net/http"
+    "time"
 
-	datastore "github.com/ipfs/go-datastore"
-	dssync "github.com/ipfs/go-datastore/sync"
-
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	host "github.com/libp2p/go-libp2p/core/host"
-	peer "github.com/libp2p/go-libp2p/core/peer"
-	routing "github.com/libp2p/go-libp2p/core/routing"
-
-	mdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
-	routingdiscovery "github.com/libp2p/go-libp2p/p2p/discovery/routing"
+    "github.com/libp2p/go-libp2p/core/host"
+    "github.com/libp2p/go-libp2p/core/peer"
+    ma "github.com/multiformats/go-multiaddr"
 )
 
-// ----------------- mDNS (LAN) -----------------
-
-type mdnsNotifee struct {
-	h host.Host
+// BootstrapClient handles communication with bootstrap server
+type BootstrapClient struct {
+    bootstrapURL string
+    host         host.Host
+    peerName     string
+    role         string
 }
 
-func (n *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
-	if pi.ID == n.h.ID() {
-		return
-	}
-	fmt.Println("[mDNS] Peer found:", pi.ID, "— dialing...")
-	_ = n.h.Connect(context.Background(), pi)
+// PeerInfo represents peer information for bootstrap
+type PeerInfo struct {
+    ID        string   `json:"id"`
+    Name      string   `json:"name"`
+    Addresses []string `json:"addresses"`
+    Role      string   `json:"role"`
 }
 
-func StartMDNS(ctx context.Context, h host.Host, serviceTag string) (func(), error) {
-	ser := mdns.NewMdnsService(h, serviceTag, &mdnsNotifee{h: h})
-	return func() { ser.Close() }, nil
+// NewBootstrapClient creates a new bootstrap client
+func NewBootstrapClient(bootstrapURL string, h host.Host, peerName, role string) *BootstrapClient {
+    return &BootstrapClient{
+        bootstrapURL: bootstrapURL,
+        host:         h,
+        peerName:     peerName,
+        role:         role,
+    }
 }
 
-// ----------------- DHT (global / WAN) -----------------
+// RegisterWithBootstrap registers this peer with the bootstrap server
+func (bc *BootstrapClient) RegisterWithBootstrap() error {
+    // Build multiaddresses for this host
+    var addresses []string
+    hostID := fmt.Sprintf("/p2p/%s", bc.host.ID().String())
+    
+    for _, addr := range bc.host.Addrs() {
+        fullAddr := addr.String() + hostID
+        addresses = append(addresses, fullAddr)
+    }
 
-func SetupDHT(ctx context.Context, h host.Host) (routing.Routing, *dht.IpfsDHT, error) {
-	ds := dssync.MutexWrap(datastore.NewMapDatastore())
-	kdht, err := dht.New(ctx, h, dht.Datastore(ds), dht.Mode(dht.ModeAuto))
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := kdht.Bootstrap(ctx); err != nil {
-		return nil, nil, err
-	}
-	return kdht, kdht, nil
+    peerInfo := PeerInfo{
+        ID:        bc.host.ID().String(),
+        Name:      bc.peerName,
+        Addresses: addresses,
+        Role:      bc.role,
+    }
+
+    jsonData, err := json.Marshal(peerInfo)
+    if err != nil {
+        return fmt.Errorf("failed to marshal peer info: %v", err)
+    }
+
+    resp, err := http.Post(
+        fmt.Sprintf("%s/register", bc.bootstrapURL),
+        "application/json",
+        bytes.NewBuffer(jsonData),
+    )
+    if err != nil {
+        return fmt.Errorf("failed to register with bootstrap: %v", err)
+    }
+    defer resp.Body.Close()
+
+    if resp.StatusCode != http.StatusOK {
+        return fmt.Errorf("bootstrap registration failed with status: %d", resp.StatusCode)
+    }
+
+    log.Printf("✅ Registered with bootstrap server")
+    return nil
 }
 
-func AdvertiseAndFind(ctx context.Context, h host.Host, r routing.Routing, rendezvous string) error {
-	rd := routingdiscovery.NewRoutingDiscovery(r)
+// ConnectToKnownPeers discovers and connects to peers from bootstrap
+func (bc *BootstrapClient) ConnectToKnownPeers() error {
+    resp, err := http.Get(fmt.Sprintf("%s/peers", bc.bootstrapURL))
+    if err != nil {
+        return fmt.Errorf("failed to get peers from bootstrap: %v", err)
+    }
+    defer resp.Body.Close()
 
-	ttl, err := rd.Advertise(ctx, rendezvous)
-	if err != nil {
-		return err
-	}
-	fmt.Println("[DHT] Advertised rendezvous:", rendezvous, " ttl:", ttl)
+    var peers []PeerInfo
+    if err := json.NewDecoder(resp.Body).Decode(&peers); err != nil {
+        return fmt.Errorf("failed to decode peers response: %v", err)
+    }
 
-	// discovery loop
-	go func() {
-		for {
-			peerCh, err := rd.FindPeers(ctx, rendezvous)
-			if err != nil {
-				time.Sleep(2 * time.Second)
-				continue
-			}
-			for pi := range peerCh {
-				if pi.ID == h.ID() {
-					continue
-				}
-				fmt.Println("[DHT] Discovered peer:", pi.ID, "— dialing...")
-				_ = h.Connect(context.Background(), pi)
-			}
-			time.Sleep(10 * time.Second)
-		}
-	}()
+    connectedCount := 0
+    for _, peerInfo := range peers {
+        // Skip ourselves
+        if peerInfo.ID == bc.host.ID().String() {
+            continue
+        }
 
-	return nil
+        // Try to connect to this peer
+        if err := bc.connectToPeer(peerInfo); err != nil {
+            log.Printf("⚠️  Failed to connect to %s: %v", peerInfo.Name, err)
+        } else {
+            connectedCount++
+            log.Printf("🔗 Connected to %s (%s)", peerInfo.Name, peerInfo.Role)
+        }
+    }
+
+    log.Printf("📊 Connected to %d peers", connectedCount)
+    return nil
+}
+
+// connectToPeer connects to a specific peer using their addresses
+func (bc *BootstrapClient) connectToPeer(peerInfo PeerInfo) error {
+    _, err := peer.Decode(peerInfo.ID)
+    if err != nil {
+        return fmt.Errorf("invalid peer ID: %v", err)
+    }
+
+    // Try each address until one works
+    for _, addrStr := range peerInfo.Addresses {
+        maddr, err := ma.NewMultiaddr(addrStr)
+        if err != nil {
+            continue
+        }
+
+        addrInfo, err := peer.AddrInfoFromP2pAddr(maddr)
+        if err != nil {
+            continue
+        }
+
+        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel()
+        
+        if err := bc.host.Connect(ctx, *addrInfo); err == nil {
+            return nil // Successfully connected
+        }
+    }
+
+    return fmt.Errorf("failed to connect using any address")
+}
+
+// StartPeriodicRegistration keeps the peer registered with bootstrap
+func (bc *BootstrapClient) StartPeriodicRegistration() {
+    ticker := time.NewTicker(2 * time.Minute)
+    go func() {
+        for range ticker.C {
+            if err := bc.RegisterWithBootstrap(); err != nil {
+                log.Printf("⚠️  Failed to re-register with bootstrap: %v", err)
+            }
+        }
+    }()
 }

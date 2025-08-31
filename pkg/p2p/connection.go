@@ -1,4 +1,3 @@
-// filepath: /home/sai/Documents/Systems/p2p/libp2p_cli_chat/pkg/p2p/connection.go
 package p2p
 
 import (
