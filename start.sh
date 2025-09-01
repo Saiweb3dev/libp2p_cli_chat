@@ -1,35 +1,38 @@
 #!/bin/bash
-# filepath: /home/sai/Documents/Systems/p2p/libp2p_compute/start.sh
+# test.sh
 
-echo "🚀 Starting P2P Distributed Compute Network..."
+echo "🚀 Starting P2P Task System Test..."
 
-# Build and start all services
-docker-compose up --build -d
+# Start bootstrap
+./bin/bootstrap --port=8080 &
+BOOTSTRAP_PID=$!
+sleep 2
 
-echo "⏳ Waiting for services to initialize..."
-sleep 15
+# Start workers
+./bin/peer --name=worker-1 --port=9002 --worker --bootstrap=http://localhost:8080 &
+WORKER1_PID=$!
 
-echo "📊 Network Status:"
-echo "==================="
+./bin/peer --name=worker-2 --port=9003 --worker --bootstrap=http://localhost:8080 &
+WORKER2_PID=$!
 
-# Check bootstrap server
-echo "🔗 Bootstrap Server:"
-curl -s http://localhost:8080/health && echo " ✅ Healthy" || echo " ❌ Unhealthy"
+./bin/peer --name=worker-3 --port=9004 --worker --bootstrap=http://localhost:8080 &
+WORKER3_PID=$!
 
-# Show registered peers
-echo -e "\n👥 Registered Peers:"
-curl -s http://localhost:8080/peers | jq '.[] | "\(.name) (\(.role)) - \(.id)"' 2>/dev/null || echo "Unable to fetch peers"
+sleep 5
 
-echo -e "\n📋 Container Status:"
-docker-compose ps
+# Start coordinator with auto-demo
+echo "🎯 Starting coordinator with auto-demo..."
+./bin/peer --name=coordinator --port=9001 --coordinator --bootstrap=http://localhost:8080 --auto-demo
 
-echo -e "\n🎯 Demo Tasks:"
-echo "The coordinator will automatically start submitting demo tasks in ~10 seconds."
-echo "Monitor the logs with: docker-compose logs -f coordinator worker1"
+# Cleanup function
+cleanup() {
+    echo "🧹 Cleaning up..."
+    kill $BOOTSTRAP_PID $WORKER1_PID $WORKER2_PID $WORKER3_PID 2>/dev/null
+    exit
+}
 
-echo -e "\n📚 Useful Commands:"
-echo "  View all logs:           docker-compose logs -f"
-echo "  View coordinator logs:   docker-compose logs -f coordinator"
-echo "  View worker logs:        docker-compose logs -f worker1 worker2 worker3 worker4"
-echo "  Stop all services:       docker-compose down"
-echo "  Interactive coordinator: docker-compose exec coordinator /app/bin/peer --name=manual-coord --coordinator --bootstrap=http://bootstrap:8080"
+# Set trap for cleanup
+trap cleanup SIGINT SIGTERM
+
+# Wait
+wait
